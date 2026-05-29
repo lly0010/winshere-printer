@@ -5,3 +5,4 @@ bin/SumatraPDF.exe
 bin/
 .DS_Store
 *.log
+config.json
