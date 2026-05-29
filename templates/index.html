@@ -47,6 +47,21 @@
     .status.info { display:block; background:#eff6ff; color:var(--brand); }
     .tips { font-size:12px; color:#9ca3af; margin-top:6px; }
     .empty { color:var(--err); font-size:14px; }
+    /* 打印预览 */
+    .preview { display:none; margin-top:14px; }
+    .preview .pv-head { font-size:14px; font-weight:600; margin-bottom:8px; }
+    .pv-box {
+      border:1px solid #e5e7eb; border-radius:10px; background:#f9fafb;
+      overflow:auto; max-height:55vh; padding:0;
+    }
+    .pv-img { display:block; max-width:100%; margin:0 auto; }
+    .pv-frame { width:100%; height:55vh; border:0; background:#fff; }
+    .pv-text {
+      margin:0; padding:12px; font-size:12px; line-height:1.5; white-space:pre-wrap;
+      word-break:break-all; color:#374151; max-height:55vh; overflow:auto;
+    }
+    .pv-msg { padding:24px 16px; text-align:center; color:#6b7280; font-size:14px; }
+    .pv-link { display:block; padding:10px 12px; font-size:13px; color:var(--brand); }
   </style>
 </head>
 <body>
@@ -63,6 +78,11 @@
       </div>
       <input type="file" id="file" name="file" hidden>
       <div class="tips">支持: {{ allowed | join(' / ') }}（单文件 ≤ 100MB）</div>
+
+      <div class="preview" id="preview">
+        <div class="pv-head">👁️ 打印预览</div>
+        <div class="pv-box" id="pvBox"></div>
+      </div>
 
       <div class="opts">
         <div>
@@ -112,12 +132,64 @@
     const form = document.getElementById('form');
     const btn = document.getElementById('btn');
     const status = document.getElementById('status');
+    const preview = document.getElementById('preview');
+    const pvBox = document.getElementById('pvBox');
 
     drop.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => showName());
+    fileInput.addEventListener('change', () => onFile());
     function showName() {
       fileName.textContent = fileInput.files.length ? '已选择: ' + fileInput.files[0].name : '';
     }
+    function onFile() { showName(); renderPreview(); }
+
+    // 打印预览 (纯浏览器端, 不上传)
+    let previewUrl = null;
+    function clearPreview() {
+      if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+      pvBox.innerHTML = '';
+      preview.style.display = 'none';
+    }
+    function renderPreview() {
+      clearPreview();
+      if (!fileInput.files.length) return;
+      const file = fileInput.files[0];
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      const imgExts = ['png','jpg','jpeg','gif','bmp','tif','tiff'];
+      const txtExts = ['txt','csv','html','htm'];
+      preview.style.display = 'block';
+
+      if (file.type.startsWith('image/') || imgExts.includes(ext)) {
+        previewUrl = URL.createObjectURL(file);
+        const img = document.createElement('img');
+        img.className = 'pv-img'; img.alt = '图片预览'; img.src = previewUrl;
+        pvBox.appendChild(img);
+      } else if (ext === 'pdf' || file.type === 'application/pdf') {
+        previewUrl = URL.createObjectURL(file);
+        const frame = document.createElement('iframe');
+        frame.className = 'pv-frame'; frame.src = previewUrl;
+        pvBox.appendChild(frame);
+        const link = document.createElement('a');
+        link.className = 'pv-link'; link.href = previewUrl; link.target = '_blank';
+        link.textContent = '若上方空白(部分手机浏览器),点此新标签查看 PDF';
+        pvBox.appendChild(link);
+      } else if (txtExts.includes(ext) || file.type.startsWith('text/')) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          const pre = document.createElement('pre');
+          pre.className = 'pv-text';
+          let t = String(e.target.result || '');
+          pre.textContent = t.length > 8000 ? t.slice(0, 8000) + '\n…(预览已截断)' : t;
+          pvBox.appendChild(pre);
+        };
+        reader.readAsText(file);
+      } else {
+        const msg = document.createElement('div');
+        msg.className = 'pv-msg';
+        msg.textContent = '此文件类型暂不支持预览,可直接点击「开始打印」。';
+        pvBox.appendChild(msg);
+      }
+    }
+
     ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
       ev.preventDefault(); drop.classList.add('drag');
     }));
@@ -125,7 +197,7 @@
       ev.preventDefault(); drop.classList.remove('drag');
     }));
     drop.addEventListener('drop', ev => {
-      if (ev.dataTransfer.files.length) { fileInput.files = ev.dataTransfer.files; showName(); }
+      if (ev.dataTransfer.files.length) { fileInput.files = ev.dataTransfer.files; onFile(); }
     });
 
     function setStatus(cls, msg) { status.className = 'status ' + cls; status.textContent = msg; }
