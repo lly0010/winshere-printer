@@ -136,9 +136,20 @@
                   </select>
                 </div>
                 <div>
-                  <label>缩放比例（%）</label>
-                  <input type="number" name="scale" id="scale" value="100" min="10" max="400" step="5">
+                  <label>缩放</label>
+                  <select name="scale_mode" id="scale_mode">
+                    <option value="100" selected>实际大小（100%）</option>
+                    <option value="fit">适应页面</option>
+                    <option value="shrink">过大才缩小</option>
+                    <option value="custom">自定义%</option>
+                  </select>
                 </div>
+              </div>
+
+              <div>
+                <label>缩放比例（%）</label>
+                <input type="number" name="scale_percent" id="scale_percent" value="100" min="10" max="400" step="5">
+                <div class="hint">与上方「缩放」联动:选「自定义%」可输入任意比例;「适应/缩小」时此项忽略</div>
               </div>
 
               <div class="row">
@@ -198,13 +209,41 @@
     }
     function onFile() { showName(); renderPreview(); }
 
-    // 收集当前表单设置 (预览与打印共用)
+    const scaleMode = document.getElementById('scale_mode');
+    const scalePct = document.getElementById('scale_percent');
+
+    // 缩放下拉与百分比框联动同步
+    function syncFromMode() {
+      const v = scaleMode.value;
+      if (v === 'fit' || v === 'shrink') {
+        scalePct.disabled = true;
+      } else if (v === '100') {          // 实际大小
+        scalePct.disabled = true; scalePct.value = 100;
+      } else {                            // 自定义%
+        scalePct.disabled = false;
+      }
+    }
+    scaleMode.addEventListener('change', () => { syncFromMode(); schedulePreview(); });
+    scalePct.addEventListener('input', () => {
+      if (scaleMode.value !== 'custom') scaleMode.value = 'custom';  // 改百分比即转自定义
+      schedulePreview();
+    });
+
+    // 收集当前表单设置 (预览与打印共用); 把缩放归一为 scale_mode + scale_percent
     function buildFormData() {
       const data = new FormData(form);
       const cb = id => document.getElementById(id).checked ? 'true' : 'false';
       data.set('duplex', cb('duplex'));
       data.set('auto_rotate', cb('auto_rotate'));
       data.set('auto_center', cb('auto_center'));
+      const m = scaleMode.value;
+      let smode = 'percent';
+      let pct = parseInt(scalePct.value || '100', 10);
+      if (m === 'fit' || m === 'shrink') smode = m;
+      else if (m === '100') pct = 100;
+      if (!(pct >= 10 && pct <= 400)) pct = 100;
+      data.set('scale_mode', smode);
+      data.set('scale_percent', String(pct));
       return data;
     }
     function applyMono() {
@@ -230,7 +269,9 @@
     }
     function applyImgTransform(img) {
       const rotate = document.getElementById('auto_rotate').checked;
-      const sc = Math.max(10, Math.min(400, parseInt(document.getElementById('scale').value || '100', 10))) / 100;
+      const m = scaleMode.value;
+      let pct = (m === 'fit' || m === 'shrink') ? 100 : parseInt(scalePct.value || '100', 10);
+      const sc = Math.max(10, Math.min(400, pct)) / 100;
       img.onload = () => {
         let t = '';
         if (rotate && img.naturalWidth > img.naturalHeight) t += 'rotate(90deg) ';
@@ -299,7 +340,7 @@
       clearTimeout(previewTimer);
       previewTimer = setTimeout(renderPreview, 350);
     }
-    ['paper', 'scale', 'pages', 'auto_rotate', 'auto_center'].forEach(id => {
+    ['paper', 'pages', 'auto_rotate', 'auto_center'].forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
       el.addEventListener('change', schedulePreview);
@@ -308,6 +349,7 @@
       }
     });
     document.getElementById('color').addEventListener('change', applyMono);
+    syncFromMode();  // 初始化缩放联动状态
 
     ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
       ev.preventDefault(); drop.classList.add('drag');

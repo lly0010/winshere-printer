@@ -68,7 +68,10 @@ def _read_options(form) -> dict:
         copies = int(form.get("copies", "1"))
     except ValueError:
         copies = 1
-    scale_percent = printing.clamp_scale(form.get("scale", "100"))
+    scale_mode = form.get("scale_mode", "percent")
+    if scale_mode not in ("percent", "fit", "shrink"):
+        scale_mode = "percent"
+    scale_percent = printing.clamp_scale(form.get("scale_percent", "100"))
     paper = form.get("paper", "A4")
     if paper not in printing.PAPER_CHOICES:
         paper = "A4"
@@ -81,6 +84,7 @@ def _read_options(form) -> dict:
         "copies": copies,
         "color": form.get("color", "auto"),
         "duplex": form.get("duplex", "false").lower() in TRUTHY,
+        "scale_mode": scale_mode,
         "scale_percent": scale_percent,
         "paper": paper,
         "pages": pages,
@@ -148,6 +152,7 @@ def api_preview():
             paper=opts["paper"],
             auto_rotate=opts["auto_rotate"],
             auto_center=opts["auto_center"],
+            scale_mode=opts["scale_mode"],
             scale_percent=opts["scale_percent"],
             pages=opts["pages"],
         )

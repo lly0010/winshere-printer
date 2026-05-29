@@ -206,18 +206,20 @@ def normalize_pdf(
     paper: str = "A4",
     auto_rotate: bool = True,
     auto_center: bool = True,
+    scale_mode: str = "percent",
     scale_percent: int = 100,
     pages: str = "",
 ) -> None:
-    """把 PDF 每页重排到指定纸张上, 应用自动旋转/自动居中/百分比缩放, 输出到 dst。
+    """把 PDF 每页重排到指定纸张上, 应用自动旋转/自动居中/缩放/页码, 输出到 dst。
 
-    scale_percent: 缩放百分比, 100 表示实际大小。
+    scale_mode: "percent"=按百分比 / "fit"=缩放铺满 / "shrink"=过大才缩小。
+    scale_percent: 当 scale_mode="percent" 时使用的百分比 (100=实际大小)。
     pages: 页码范围(如 "1-5,8"), 为空表示全部; 输出仅含所选页。
     生成的每页尺寸都精确等于纸张大小, 内容已按设置摆放; 之后用 SumatraPDF
     以 noscale 1:1 打印即可, 不会再被二次旋转或缩放。
     """
     pw, ph = PAPER_POINTS.get(paper, PAPER_POINTS["A4"])
-    scale = clamp_scale(scale_percent) / 100.0
+    pct = clamp_scale(scale_percent) / 100.0
     reader = PdfReader(src)
     writer = PdfWriter()
     indices = _parse_pages(pages, len(reader.pages))
@@ -236,6 +238,15 @@ def normalize_pdf(
 
         rotate = auto_rotate and _should_rotate(sw, sh, pw, ph)
         ew, eh = (sh, sw) if rotate else (sw, sh)  # 旋转后的可视宽高
+
+        if ew <= 0 or eh <= 0:
+            scale = pct
+        elif scale_mode == "fit":
+            scale = min(pw / ew, ph / eh)
+        elif scale_mode == "shrink":
+            scale = min(1.0, pw / ew, ph / eh)
+        else:  # percent
+            scale = pct
         sew, seh = ew * scale, eh * scale
 
         if auto_center:
@@ -299,6 +310,7 @@ def print_file(
     copies: int = 1,
     color: str = "auto",
     duplex: bool = False,
+    scale_mode: str = "percent",
     scale_percent: int = 100,
     paper: str = "A4",
     pages: str = "",
@@ -328,12 +340,17 @@ def print_file(
         if paper not in PAPER_CHOICES:
             paper = "A4"
 
-        # PDF: 用 pypdf 规范化, 把自动旋转/自动居中/百分比缩放/页码烘焙进页面,
+        # PDF: 用 pypdf 规范化, 把自动旋转/自动居中/缩放/页码烘焙进页面,
         # 之后用 noscale 让 SumatraPDF 1:1 打印, 避免二次旋转/缩放。
         print_path = path
         normalized: str | None = None
-        # 图片用 fit 铺满纸张; 无 pypdf 时 PDF 回退为按比例(noscale≈实际大小)
-        print_scale = "fit" if ext != ".pdf" else "noscale"
+        # 图片用 fit 铺满纸张; 无 pypdf 时 PDF 回退到对应的 SumatraPDF 缩放令牌
+        if ext != ".pdf":
+            print_scale = "fit"
+        elif scale_mode in ("fit", "shrink"):
+            print_scale = scale_mode
+        else:
+            print_scale = "noscale"
         print_pages = pages
         if ext == ".pdf" and HAVE_PYPDF:
             try:
@@ -344,7 +361,7 @@ def print_file(
                 normalize_pdf(
                     path, normalized, paper=paper,
                     auto_rotate=auto_rotate, auto_center=auto_center,
-                    scale_percent=scale_percent, pages=pages,
+                    scale_mode=scale_mode, scale_percent=scale_percent, pages=pages,
                 )
                 print_path = normalized
                 print_scale = "noscale"  # 几何已烘焙, 不再缩放
