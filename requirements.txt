@@ -1,0 +1,11 @@
+Flask>=3.0.0
+Werkzeug>=3.0.0
+# Windows 打印 / 打印机枚举 (仅 Windows 安装)
+pywin32>=306 ; platform_system == "Windows"
+# 启动时在控制台生成访问二维码 (可选, 手机扫码直达)
+qrcode>=7.4
+# 控制面板的系统托盘图标 (最小化到托盘)
+pystray>=0.19
+Pillow>=10.0
+# PDF 规范化 (自动旋转 / 自动居中 / 按纸张缩放)
+pypdf>=4.0

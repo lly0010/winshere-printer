@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>内网共享打印</title>
+  <style>
+    :root { --brand:#2563eb; --bg:#f4f6fb; --card:#fff; --ok:#16a34a; --err:#dc2626; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+      background:var(--bg); color:#1f2937; padding:16px;
+    }
+    .wrap { max-width:1100px; margin:0 auto; }
+    h1 { font-size:20px; margin:8px 0 4px; display:flex; align-items:center; gap:8px; }
+    .sub { color:#6b7280; font-size:13px; margin-bottom:16px; }
+
+    /* 左右两栏布局, 窄屏自动堆叠 */
+    .layout { display:flex; gap:16px; align-items:flex-start; }
+    .col-left  { flex:1 1 58%; min-width:0; }
+    .col-right { flex:1 1 360px; position:sticky; top:16px; }
+    @media (max-width: 820px) {
+      .layout { flex-direction:column; }
+      .col-right { position:static; width:100%; }
+    }
+
+    .card { background:var(--card); border-radius:16px; padding:18px; margin-bottom:16px;
+      box-shadow:0 1px 3px rgba(0,0,0,.08); }
+    label { font-size:14px; font-weight:600; display:block; margin-bottom:8px; }
+    .drop {
+      border:2px dashed #c7d2fe; border-radius:14px; padding:22px 16px; text-align:center;
+      color:#6b7280; cursor:pointer; transition:.15s; background:#fafbff;
+    }
+    .drop.drag { border-color:var(--brand); background:#eef2ff; color:var(--brand); }
+    .drop b { color:var(--brand); }
+    .file-name { margin-top:10px; font-size:14px; color:#111827; word-break:break-all; }
+    select, input[type=number], input[type=text] {
+      width:100%; padding:11px 12px; border:1px solid #d1d5db; border-radius:10px;
+      font-size:15px; background:#fff; appearance:none;
+    }
+    .row { display:flex; gap:12px; }
+    .row > div { flex:1; }
+    .opts > div { margin-bottom:14px; }
+    .chk { display:flex; align-items:center; gap:8px; font-weight:600; font-size:14px; }
+    .chk input { width:18px; height:18px; }
+    button {
+      width:100%; padding:14px; border:0; border-radius:12px; background:var(--brand);
+      color:#fff; font-size:16px; font-weight:700; cursor:pointer; margin-top:4px;
+    }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .status { margin-top:14px; padding:12px 14px; border-radius:10px; font-size:14px;
+      display:none; white-space:pre-wrap; }
+    .status.ok { display:block; background:#ecfdf5; color:var(--ok); }
+    .status.err { display:block; background:#fef2f2; color:var(--err); }
+    .status.info { display:block; background:#eff6ff; color:var(--brand); }
+    .tips { font-size:12px; color:#9ca3af; margin-top:6px; }
+    .hint { font-size:12px; color:#9ca3af; margin-top:4px; }
+    .empty { color:var(--err); font-size:14px; }
+
+    /* 打印预览 (放大) */
+    .pv-head { font-size:14px; font-weight:600; margin:4px 0 8px; display:flex;
+      justify-content:space-between; align-items:center; }
+    .pv-empty { color:#9ca3af; }
+    .pv-box {
+      border:1px solid #e5e7eb; border-radius:10px; background:#f3f4f6;
+      overflow:auto; height:72vh; min-height:360px; display:flex; flex-direction:column;
+    }
+    @media (max-width: 820px) { .pv-box { height:56vh; } }
+    .pv-img { display:block; max-width:100%; margin:auto; }
+    .pv-frame { width:100%; flex:1 1 auto; border:0; background:#fff; min-height:300px; }
+    .pv-text {
+      margin:0; padding:12px; font-size:12px; line-height:1.5; white-space:pre-wrap;
+      word-break:break-all; color:#374151; overflow:auto;
+    }
+    .pv-msg { margin:auto; padding:24px 16px; text-align:center; color:#6b7280; font-size:14px; }
+    .pv-link { display:block; padding:8px 12px; font-size:13px; color:var(--brand); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🖨️ 内网共享打印</h1>
+    <div class="sub">无需安装驱动 · 支持安卓 / iOS / Mac / Windows · 本机 IP {{ host_ip }}</div>
+
+    <form id="form">
+      <div class="layout">
+        <!-- 左栏: 文件 + 大预览 -->
+        <div class="col-left">
+          <div class="card">
+            <label>① 选择文件</label>
+            <div class="drop" id="drop">
+              点击选择 或 拖拽文件到此　<b>选择要打印的文件</b>
+              <div class="file-name" id="fileName"></div>
+            </div>
+            <input type="file" id="file" name="file" hidden>
+            <div class="tips">支持: {{ allowed | join(' / ') }}（单文件 ≤ 100MB）</div>
+
+            <div class="pv-head">
+              <span>👁️ 打印预览</span>
+              <span class="pv-empty" id="pvEmpty">尚未选择文件</span>
+            </div>
+            <div class="pv-box" id="pvBox"></div>
+          </div>
+        </div>
+
+        <!-- 右栏: 打印选项 -->
+        <div class="col-right">
+          <div class="card">
+            <label>② 打印设置</label>
+            <div class="opts">
+              <div>
+                <label>打印机</label>
+                {% if printers %}
+                <select name="printer" id="printer">
+                  {% for p in printers %}
+                  <option value="{{ p.name }}" {% if p.default %}selected{% endif %}>
+                    {{ p.name }}{% if p.default %}（默认）{% endif %}
+                  </option>
+                  {% endfor %}
+                </select>
+                {% else %}
+                <div class="empty">⚠️ 未检测到打印机。请确认本程序运行在已连接打印机的 Windows 上, 并已安装 pywin32。</div>
+                {% endif %}
+              </div>
+
+              <div class="row">
+                <div>
+                  <label>纸张</label>
+                  <select name="paper" id="paper">
+                    <option value="A4" selected>A4</option>
+                    <option value="A3">A3</option>
+                    <option value="A5">A5</option>
+                    <option value="A6">A6</option>
+                    <option value="letter">Letter</option>
+                    <option value="legal">Legal</option>
+                  </select>
+                </div>
+                <div>
+                  <label>缩放</label>
+                  <select name="scale_mode" id="scale_mode">
+                    <option value="100" selected>实际大小（100%）</option>
+                    <option value="fit">适应页面</option>
+                    <option value="shrink">过大才缩小</option>
+                    <option value="custom">自定义%</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label>缩放比例（%）</label>
+                <input type="number" name="scale_percent" id="scale_percent" value="100" min="10" max="400" step="5">
+                <div class="hint">与上方「缩放」联动:选「自定义%」可输入任意比例;「适应/缩小」时此项忽略</div>
+              </div>
+
+              <div class="row">
+                <div>
+                  <label>份数</label>
+                  <input type="number" name="copies" id="copies" value="1" min="1" max="99">
+                </div>
+                <div>
+                  <label>颜色</label>
+                  <select name="color" id="color">
+                    <option value="auto">自动</option>
+                    <option value="color">彩色</option>
+                    <option value="mono">黑白</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label>页面范围</label>
+                <input type="text" name="pages" id="pages" placeholder="留空=全部，如 1-5,8">
+                <div class="hint">仅对 PDF 生效；格式如 1-5,8（页码、逗号、连字符）</div>
+              </div>
+
+              <div>
+                <label class="chk"><input type="checkbox" name="auto_rotate" id="auto_rotate" checked> 自动旋转（横向页自动转正）</label>
+              </div>
+              <div>
+                <label class="chk"><input type="checkbox" name="auto_center" id="auto_center" checked> 自动居中</label>
+              </div>
+              <div>
+                <label class="chk"><input type="checkbox" name="duplex" id="duplex"> 双面打印</label>
+              </div>
+            </div>
+
+            <button type="submit" id="btn" {% if not printers %}disabled{% endif %}>开始打印</button>
+            <div class="status" id="status"></div>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('file');
+    const drop = document.getElementById('drop');
+    const fileName = document.getElementById('fileName');
+    const form = document.getElementById('form');
+    const btn = document.getElementById('btn');
+    const status = document.getElementById('status');
+    const pvBox = document.getElementById('pvBox');
+    const pvEmpty = document.getElementById('pvEmpty');
+
+    drop.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => onFile());
+    function showName() {
+      fileName.textContent = fileInput.files.length ? '已选择: ' + fileInput.files[0].name : '';
+    }
+    function onFile() { showName(); renderPreview(); }
+
+    const scaleMode = document.getElementById('scale_mode');
+    const scalePct = document.getElementById('scale_percent');
+
+    // 缩放下拉与百分比框联动同步
+    function syncFromMode() {
+      const v = scaleMode.value;
+      if (v === 'fit' || v === 'shrink') {
+        scalePct.disabled = true;
+      } else if (v === '100') {          // 实际大小
+        scalePct.disabled = true; scalePct.value = 100;
+      } else {                            // 自定义%
+        scalePct.disabled = false;
+      }
+    }
+    scaleMode.addEventListener('change', () => { syncFromMode(); schedulePreview(); });
+    scalePct.addEventListener('input', () => {
+      if (scaleMode.value !== 'custom') scaleMode.value = 'custom';  // 改百分比即转自定义
+      schedulePreview();
+    });
+
+    // 收集当前表单设置 (预览与打印共用); 把缩放归一为 scale_mode + scale_percent
+    function buildFormData() {
+      const data = new FormData(form);
+      const cb = id => document.getElementById(id).checked ? 'true' : 'false';
+      data.set('duplex', cb('duplex'));
+      data.set('auto_rotate', cb('auto_rotate'));
+      data.set('auto_center', cb('auto_center'));
+      const m = scaleMode.value;
+      let smode = 'percent';
+      let pct = parseInt(scalePct.value || '100', 10);
+      if (m === 'fit' || m === 'shrink') smode = m;
+      else if (m === '100') pct = 100;
+      if (!(pct >= 10 && pct <= 400)) pct = 100;
+      data.set('scale_mode', smode);
+      data.set('scale_percent', String(pct));
+      return data;
+    }
+    function applyMono() {
+      pvBox.style.filter = document.getElementById('color').value === 'mono' ? 'grayscale(1)' : '';
+    }
+
+    // 打印预览: PDF 交给服务端按当前设置排版(预览=实际打印效果), 图片/文本走客户端
+    let previewUrl = null;
+    let previewSeq = 0;
+    function clearPreview() {
+      if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+      pvBox.innerHTML = '';
+      applyMono();
+    }
+    function showFrame(src) {
+      const frame = document.createElement('iframe');
+      frame.className = 'pv-frame'; frame.src = src;
+      pvBox.appendChild(frame);
+      const link = document.createElement('a');
+      link.className = 'pv-link'; link.href = src; link.target = '_blank';
+      link.textContent = '若上方空白(部分手机浏览器),点此新标签查看';
+      pvBox.appendChild(link);
+    }
+    function applyImgTransform(img) {
+      const rotate = document.getElementById('auto_rotate').checked;
+      const m = scaleMode.value;
+      let pct = (m === 'fit' || m === 'shrink') ? 100 : parseInt(scalePct.value || '100', 10);
+      const sc = Math.max(10, Math.min(400, pct)) / 100;
+      img.onload = () => {
+        let t = '';
+        if (rotate && img.naturalWidth > img.naturalHeight) t += 'rotate(90deg) ';
+        if (sc !== 1) t += 'scale(' + sc + ') ';
+        img.style.transform = t.trim();
+      };
+    }
+    async function renderPreview() {
+      clearPreview();
+      if (!fileInput.files.length) { pvEmpty.textContent = '尚未选择文件'; return; }
+      const file = fileInput.files[0];
+      pvEmpty.textContent = file.name;
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      const imgExts = ['png','jpg','jpeg','gif','bmp','tif','tiff'];
+      const txtExts = ['txt','csv','html','htm'];
+      const isPdf = ext === 'pdf' || file.type === 'application/pdf';
+      const isImg = file.type.startsWith('image/') || imgExts.includes(ext);
+
+      if (isPdf) {
+        const seq = ++previewSeq;
+        pvEmpty.textContent = file.name + ' · 生成预览中…';
+        try {
+          const r = await fetch('/api/preview', { method: 'POST', body: buildFormData() });
+          if (seq !== previewSeq) return;            // 已有更新的请求, 丢弃
+          const ct = r.headers.get('content-type') || '';
+          if (r.ok && ct.includes('application/pdf')) {
+            const blob = await r.blob();
+            if (seq !== previewSeq) return;
+            previewUrl = URL.createObjectURL(blob);
+          } else {
+            previewUrl = URL.createObjectURL(file);  // 回退: 原始 PDF
+          }
+        } catch (e) {
+          previewUrl = URL.createObjectURL(file);
+        }
+        pvEmpty.textContent = file.name;
+        showFrame(previewUrl);
+      } else if (isImg) {
+        previewUrl = URL.createObjectURL(file);
+        const img = document.createElement('img');
+        img.className = 'pv-img'; img.alt = '图片预览'; img.src = previewUrl;
+        applyImgTransform(img);
+        pvBox.appendChild(img);
+      } else if (txtExts.includes(ext) || file.type.startsWith('text/')) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          const pre = document.createElement('pre');
+          pre.className = 'pv-text';
+          let t = String(e.target.result || '');
+          pre.textContent = t.length > 8000 ? t.slice(0, 8000) + '\n…(预览已截断)' : t;
+          pvBox.appendChild(pre);
+        };
+        reader.readAsText(file);
+      } else {
+        const msg = document.createElement('div');
+        msg.className = 'pv-msg';
+        msg.textContent = '此文件类型暂不支持预览,可直接点击「开始打印」。';
+        pvBox.appendChild(msg);
+      }
+    }
+
+    // 设置变动时刷新预览 (防抖); 颜色仅切换灰度, 无需重新生成
+    let previewTimer = null;
+    function schedulePreview() {
+      if (!fileInput.files.length) return;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(renderPreview, 350);
+    }
+    ['paper', 'pages', 'auto_rotate', 'auto_center'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', schedulePreview);
+      if (el.tagName === 'INPUT' && (el.type === 'number' || el.type === 'text')) {
+        el.addEventListener('input', schedulePreview);
+      }
+    });
+    document.getElementById('color').addEventListener('change', applyMono);
+    syncFromMode();  // 初始化缩放联动状态
+
+    ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
+      ev.preventDefault(); drop.classList.add('drag');
+    }));
+    ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {
+      ev.preventDefault(); drop.classList.remove('drag');
+    }));
+    drop.addEventListener('drop', ev => {
+      if (ev.dataTransfer.files.length) { fileInput.files = ev.dataTransfer.files; onFile(); }
+    });
+
+    function setStatus(cls, msg) { status.className = 'status ' + cls; status.textContent = msg; }
+
+    form.addEventListener('submit', async ev => {
+      ev.preventDefault();
+      if (!fileInput.files.length) { setStatus('err', '请先选择文件'); return; }
+      const data = buildFormData();
+      btn.disabled = true;
+      setStatus('info', '正在上传并打印, 请稍候…');
+      try {
+        const r = await fetch('/api/print', { method: 'POST', body: data });
+        const j = await r.json();
+        if (j.ok) { setStatus('ok', '✅ ' + (j.message || '打印任务已发送')); }
+        else { setStatus('err', '❌ ' + (j.error || '打印失败')); }
+      } catch (e) {
+        setStatus('err', '❌ 网络错误: ' + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
