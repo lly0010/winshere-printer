@@ -91,6 +91,10 @@ def api_print():
     if not re.fullmatch(r"[0-9,\-]*", pages):
         pages = ""
 
+    truthy = ("1", "true", "on", "yes")
+    auto_rotate = request.form.get("auto_rotate", "true").lower() in truthy
+    auto_center = request.form.get("auto_center", "true").lower() in truthy
+
     # 落盘到临时目录, 用唯一前缀避免冲突
     safe_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}_{filename}")
     f.save(safe_path)
@@ -105,6 +109,8 @@ def api_print():
             scale=scale,
             paper=paper,
             pages=pages,
+            auto_rotate=auto_rotate,
+            auto_center=auto_center,
         )
         return jsonify(ok=True, message=msg)
     except printing.PrintError as exc:

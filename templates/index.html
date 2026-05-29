@@ -168,6 +168,12 @@
               </div>
 
               <div>
+                <label class="chk"><input type="checkbox" name="auto_rotate" id="auto_rotate" checked> 自动旋转（横向页自动转正）</label>
+              </div>
+              <div>
+                <label class="chk"><input type="checkbox" name="auto_center" id="auto_center" checked> 自动居中</label>
+              </div>
+              <div>
                 <label class="chk"><input type="checkbox" name="duplex" id="duplex"> 双面打印</label>
               </div>
             </div>
@@ -260,7 +266,10 @@
       ev.preventDefault();
       if (!fileInput.files.length) { setStatus('err', '请先选择文件'); return; }
       const data = new FormData(form);
-      data.set('duplex', document.getElementById('duplex').checked ? 'true' : 'false');
+      const cb = id => document.getElementById(id).checked ? 'true' : 'false';
+      data.set('duplex', cb('duplex'));
+      data.set('auto_rotate', cb('auto_rotate'));
+      data.set('auto_center', cb('auto_center'));
       btn.disabled = true;
       setStatus('info', '正在上传并打印, 请稍候…');
       try {

@@ -16,11 +16,20 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from dataclasses import dataclass
 
 # ---- 平台相关依赖的优雅降级 -------------------------------------------------
 IS_WINDOWS = sys.platform.startswith("win")
+
+# pypdf 用于 PDF 规范化(自动旋转 / 自动居中 / 按纸张缩放); 缺失时跳过规范化
+try:
+    from pypdf import PdfReader, PdfWriter, Transformation  # type: ignore
+
+    HAVE_PYPDF = True
+except Exception:  # noqa: BLE001
+    HAVE_PYPDF = False
 
 try:  # pragma: no cover - 仅 Windows
     import win32api  # type: ignore
@@ -135,6 +144,83 @@ def is_allowed(filename: str) -> bool:
 SCALE_CHOICES = ("auto", "noscale", "fit", "shrink")
 PAPER_CHOICES = ("A4", "A3", "A5", "A6", "letter", "legal")
 
+# 各纸张的尺寸(单位: PDF point, 1pt=1/72 英寸), 纵向 (宽, 高)
+PAPER_POINTS: dict[str, tuple[float, float]] = {
+    "A4": (595.2756, 841.8898),
+    "A3": (841.8898, 1190.5512),
+    "A5": (419.5276, 595.2756),
+    "A6": (297.6378, 419.5276),
+    "letter": (612.0, 792.0),
+    "legal": (612.0, 1008.0),
+}
+
+
+def _should_rotate(sw: float, sh: float, pw: float, ph: float) -> bool:
+    """页面方向与纸张方向不一致时需要旋转 90° (自动旋转)。"""
+    return (sw > sh) != (pw > ph)
+
+
+def _compute_scale(ew: float, eh: float, pw: float, ph: float, mode: str) -> float:
+    """根据缩放模式计算缩放系数。"""
+    if ew <= 0 or eh <= 0:
+        return 1.0
+    if mode == "fit":
+        return min(pw / ew, ph / eh)
+    if mode == "shrink":
+        return min(1.0, pw / ew, ph / eh)
+    return 1.0  # noscale: 100% 实际大小
+
+
+def normalize_pdf(
+    src: str,
+    dst: str,
+    paper: str = "A4",
+    auto_rotate: bool = True,
+    auto_center: bool = True,
+    scale_mode: str = "noscale",
+) -> None:
+    """把 PDF 每页重排到指定纸张上, 应用自动旋转/自动居中/缩放, 输出到 dst。
+
+    生成的每页尺寸都精确等于纸张大小, 内容已按设置摆放; 之后用 SumatraPDF
+    以 noscale 1:1 打印即可, 不会再被二次旋转或缩放。
+    """
+    pw, ph = PAPER_POINTS.get(paper, PAPER_POINTS["A4"])
+    reader = PdfReader(src)
+    writer = PdfWriter()
+
+    for page in reader.pages:
+        # 先把页面自带的 /Rotate 烘焙进内容, 这样 mediabox 反映的就是可视尺寸
+        try:
+            page.transfer_rotation_to_content()
+        except Exception:  # noqa: BLE001
+            pass
+
+        box = page.mediabox
+        left, bottom = float(box.left), float(box.bottom)
+        sw, sh = float(box.width), float(box.height)
+
+        rotate = auto_rotate and _should_rotate(sw, sh, pw, ph)
+        ew, eh = (sh, sw) if rotate else (sw, sh)  # 旋转后的可视宽高
+        scale = _compute_scale(ew, eh, pw, ph, scale_mode)
+        sew, seh = ew * scale, eh * scale
+
+        if auto_center:
+            tx, ty = (pw - sew) / 2.0, (ph - seh) / 2.0
+        else:
+            tx, ty = 0.0, ph - seh  # 不居中则左上对齐
+
+        op = Transformation().translate(-left, -bottom)
+        if rotate:
+            # 旋转 90° 后内容落到第一象限, 占据 (sh, sw)
+            op = op.rotate(90).translate(sh, 0)
+        op = op.scale(scale).translate(tx, ty)
+
+        new_page = writer.add_blank_page(width=pw, height=ph)
+        new_page.merge_transformed_page(page, op)
+
+    with open(dst, "wb") as fh:
+        writer.write(fh)
+
 
 def _build_sumatra_settings(
     color: str,
@@ -182,6 +268,8 @@ def print_file(
     scale: str = "auto",
     paper: str = "A4",
     pages: str = "",
+    auto_rotate: bool = True,
+    auto_center: bool = True,
 ) -> str:
     """打印一个文件, 返回所用打印方式的描述。失败抛 PrintError。"""
     if not os.path.isfile(path):
@@ -209,25 +297,58 @@ def print_file(
             scale = "noscale"
         if paper not in PAPER_CHOICES:
             paper = "A4"
-        settings = _build_sumatra_settings(
-            color, duplex, scale=scale, paper=paper, pages=pages
-        )
-        # SumatraPDF 不直接支持份数, 通过多次提交实现
-        for _ in range(copies):
-            cmd = [
-                sumatra,
-                "-print-to", target_printer,
-                "-print-settings", settings,
-                "-silent",
-                "-exit-when-done",
-                path,
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                raise PrintError(
-                    f"SumatraPDF 打印失败 (code {proc.returncode}): "
-                    f"{proc.stderr or proc.stdout}"
+
+        # PDF: 用 pypdf 规范化, 把自动旋转/自动居中/缩放烘焙进页面,
+        # 之后用 noscale 让 SumatraPDF 1:1 打印, 避免二次旋转/缩放。
+        print_path = path
+        normalized: str | None = None
+        print_scale = scale
+        if ext == ".pdf" and HAVE_PYPDF:
+            try:
+                fd, normalized = tempfile.mkstemp(
+                    suffix=".pdf", dir=os.path.dirname(path) or None
                 )
+                os.close(fd)
+                normalize_pdf(
+                    path, normalized, paper=paper,
+                    auto_rotate=auto_rotate, auto_center=auto_center,
+                    scale_mode=scale,
+                )
+                print_path = normalized
+                print_scale = "noscale"  # 几何已烘焙, 不再缩放
+            except Exception:  # noqa: BLE001 - 规范化失败则回退原文件
+                if normalized and os.path.exists(normalized):
+                    os.remove(normalized)
+                normalized = None
+                print_path = path
+                print_scale = scale
+
+        settings = _build_sumatra_settings(
+            color, duplex, scale=print_scale, paper=paper, pages=pages
+        )
+        try:
+            # SumatraPDF 不直接支持份数, 通过多次提交实现
+            for _ in range(copies):
+                cmd = [
+                    sumatra,
+                    "-print-to", target_printer,
+                    "-print-settings", settings,
+                    "-silent",
+                    "-exit-when-done",
+                    print_path,
+                ]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    raise PrintError(
+                        f"SumatraPDF 打印失败 (code {proc.returncode}): "
+                        f"{proc.stderr or proc.stdout}"
+                    )
+        finally:
+            if normalized and os.path.exists(normalized):
+                try:
+                    os.remove(normalized)
+                except OSError:
+                    pass
         return f"已通过 SumatraPDF 发送到打印机 [{target_printer}] x{copies} 份"
 
     # 其它文档: 用系统关联程序的 printto 动作
