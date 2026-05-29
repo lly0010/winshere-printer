@@ -7,11 +7,8 @@ Winshere Printer 控制面板 (桌面 GUI)
   - 显示内网访问地址, 一键在浏览器打开 / 复制
   - 查看服务运行日志
   - 最小化到系统托盘 (需要 pystray + Pillow, 缺失时回退为普通最小化)
-  - 开机自动启动 (写入 Windows 注册表 Run 项)
-  - 静默启动 (--silent): 启动即隐藏到托盘并自动开启打印服务
 
 命令行参数:
-  --silent     静默启动: 隐藏窗口到托盘 + 自动启动打印服务 (开机启动使用此参数)
   --minimized  启动后直接最小化到托盘
 """
 
@@ -33,8 +30,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 APP_PATH = os.path.join(HERE, "app.py")
 DEFAULT_PORT = 8631
-APP_REG_NAME = "WinsherePrinter"
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -46,14 +41,6 @@ try:
     HAVE_TRAY = True
 except Exception:  # noqa: BLE001
     HAVE_TRAY = False
-
-# ---- 可选依赖: Windows 注册表 (开机启动) -------------------------------------
-try:
-    import winreg  # type: ignore
-
-    HAVE_WINREG = True
-except Exception:  # noqa: BLE001
-    HAVE_WINREG = False
 
 
 def local_ip() -> str:
@@ -85,51 +72,6 @@ def save_config(cfg: dict) -> None:
         pass
 
 
-# ---- 开机自启 (Windows 注册表 Run 项) ---------------------------------------
-def _pythonw_path() -> str:
-    """优先用无控制台的 pythonw.exe 启动, 避免开机弹黑窗。"""
-    base = os.path.dirname(sys.executable)
-    cand = os.path.join(base, "pythonw.exe")
-    return cand if os.path.isfile(cand) else sys.executable
-
-
-def autostart_command() -> str:
-    return f'"{_pythonw_path()}" "{os.path.join(HERE, "control_panel.py")}" --silent'
-
-
-def is_autostart_enabled() -> bool:
-    if not (IS_WINDOWS and HAVE_WINREG):
-        return False
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-            winreg.QueryValueEx(k, APP_REG_NAME)
-            return True
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return False
-
-
-def set_autostart(enable: bool) -> tuple[bool, str]:
-    """开启/关闭开机自启, 返回 (是否成功, 提示信息)。"""
-    if not (IS_WINDOWS and HAVE_WINREG):
-        return False, "开机自启仅支持 Windows。"
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
-        ) as k:
-            if enable:
-                winreg.SetValueEx(k, APP_REG_NAME, 0, winreg.REG_SZ, autostart_command())
-                return True, "已设置开机自动启动 (静默)。"
-            try:
-                winreg.DeleteValue(k, APP_REG_NAME)
-            except FileNotFoundError:
-                pass
-            return True, "已取消开机自动启动。"
-    except OSError as exc:
-        return False, f"写入注册表失败: {exc}"
-
-
 def make_tray_image():
     """生成一个简单的打印机图标 (PIL Image)。"""
     img = Image.new("RGBA", (64, 64), (37, 99, 235, 255))
@@ -143,7 +85,7 @@ def make_tray_image():
 
 
 class ControlPanel:
-    def __init__(self, root: tk.Tk, silent: bool = False, minimized: bool = False) -> None:
+    def __init__(self, root: tk.Tk, minimized: bool = False) -> None:
         self.root = root
         self.proc: subprocess.Popen | None = None
         self.log_queue: "queue.Queue[str]" = queue.Queue()
@@ -154,13 +96,12 @@ class ControlPanel:
         cfg = load_config()
         self.port = tk.StringVar(value=str(cfg.get("port", DEFAULT_PORT)))
         self.status = tk.StringVar(value="● 已停止")
-        self.var_autostart = tk.BooleanVar(value=is_autostart_enabled())
         self.var_tray = tk.BooleanVar(value=bool(cfg.get("minimize_to_tray", True)))
         self.var_autorun = tk.BooleanVar(value=bool(cfg.get("auto_start_service", False)))
 
         root.title("Winshere Printer 控制面板")
-        root.geometry("580x520")
-        root.minsize(500, 460)
+        root.geometry("580x500")
+        root.minsize(500, 440)
 
         self._build_ui()
         self._setup_tray()
@@ -169,16 +110,10 @@ class ControlPanel:
         self.root.bind("<Unmap>", self._on_unmap)
         self.root.after(150, self._drain_log)
 
-        # 静默启动: 隐藏到托盘 + 自动开启服务
-        if silent:
-            self.var_autorun.set(True)
+        if self.var_autorun.get():
             self.root.after(200, self.start)
+        if minimized:
             self.root.after(400, self.hide_to_tray)
-        else:
-            if self.var_autorun.get():
-                self.root.after(200, self.start)
-            if minimized:
-                self.root.after(400, self.hide_to_tray)
 
     # ---- UI ----------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -208,22 +143,18 @@ class ControlPanel:
         opts = ttk.Frame(cfg)
         opts.pack(fill="x", padx=10, pady=(0, 8))
         ttk.Checkbutton(
-            opts, text="开机自动启动 (静默)", variable=self.var_autostart,
-            command=self.toggle_autostart,
-        ).grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Checkbutton(
             opts, text="启动面板时自动开启服务", variable=self.var_autorun,
             command=self._save_options,
-        ).grid(row=1, column=0, sticky="w", pady=2)
+        ).grid(row=0, column=0, sticky="w", pady=2)
         ttk.Checkbutton(
             opts, text="最小化 / 关闭时隐藏到系统托盘", variable=self.var_tray,
             command=self._save_options,
-        ).grid(row=2, column=0, sticky="w", pady=2)
+        ).grid(row=1, column=0, sticky="w", pady=2)
         if not HAVE_TRAY:
             ttk.Label(
                 opts, text="(未安装 pystray/Pillow, 托盘不可用, 将普通最小化)",
                 foreground="#9ca3af",
-            ).grid(row=3, column=0, sticky="w")
+            ).grid(row=2, column=0, sticky="w")
 
         # 控制按钮
         btns = ttk.Frame(self.root)
@@ -324,15 +255,6 @@ class ControlPanel:
             return int(self.port.get().strip())
         except ValueError:
             return DEFAULT_PORT
-
-    def toggle_autostart(self) -> None:
-        enable = self.var_autostart.get()
-        ok, msg = set_autostart(enable)
-        self._append_log(f"[控制面板] {msg}\n")
-        if not ok:
-            # 失败则回滚勾选状态
-            self.var_autostart.set(is_autostart_enabled())
-            messagebox.showwarning("开机自启", msg)
 
     # ---- 业务逻辑 -----------------------------------------------------------
     def _validate_port(self) -> int | None:
@@ -486,8 +408,6 @@ class ControlPanel:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Winshere Printer 控制面板")
-    parser.add_argument("--silent", action="store_true",
-                        help="静默启动: 隐藏到托盘并自动开启服务 (开机自启使用)")
     parser.add_argument("--minimized", action="store_true",
                         help="启动后最小化到托盘")
     args = parser.parse_args()
@@ -499,7 +419,7 @@ def main() -> None:
         windll.shcore.SetProcessDpiAwareness(1)
     except Exception:  # noqa: BLE001
         pass
-    ControlPanel(root, silent=args.silent, minimized=args.minimized)
+    ControlPanel(root, minimized=args.minimized)
     root.mainloop()
 
 
