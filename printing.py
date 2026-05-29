@@ -132,9 +132,22 @@ def is_allowed(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in ALLOWED_EXTS
 
 
-def _build_sumatra_settings(copies: int, color: str, duplex: bool) -> str:
-    """构造 SumatraPDF -print-settings 字符串。"""
-    tokens: list[str] = ["fit"]
+def _build_sumatra_settings(
+    color: str,
+    duplex: bool,
+    scale: str = "noscale",
+    paper: str = "A4",
+) -> str:
+    """构造 SumatraPDF -print-settings 字符串。
+
+    scale: noscale=100% 实际大小 / fit=缩放铺满 / shrink=过大才缩小。
+    paper: 纸张大小, 默认 A4。
+    SumatraPDF 打印时默认会按页面方向"自动旋转"并"自动居中", 无需额外参数,
+    因此横向 PDF 会自动转正并铺在 A4 上居中打印。
+    """
+    tokens: list[str] = [scale]
+    if paper:
+        tokens.append(f"paper={paper}")
     if color == "mono":
         tokens.append("monochrome")
     elif color == "color":
@@ -176,7 +189,9 @@ def print_file(
                 "需要 SumatraPDF 才能静默打印 PDF/图片, 但未找到也无法下载。"
                 "请手动下载便携版放到程序目录的 bin/SumatraPDF.exe。"
             )
-        settings = _build_sumatra_settings(copies, color, duplex)
+        # PDF 按需求用 A4 + 100% (自动旋转/居中); 图片用 fit 避免大图被裁切
+        scale = "noscale" if ext == ".pdf" else "fit"
+        settings = _build_sumatra_settings(color, duplex, scale=scale, paper="A4")
         # SumatraPDF 不直接支持份数, 通过多次提交实现
         for _ in range(copies):
             cmd = [
