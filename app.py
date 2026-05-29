@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import socket
 import tempfile
 import uuid
@@ -79,6 +80,17 @@ def api_print():
     color = request.form.get("color", "auto")
     duplex = request.form.get("duplex", "false").lower() in ("1", "true", "on", "yes")
 
+    scale = request.form.get("scale", "auto")
+    if scale not in printing.SCALE_CHOICES:
+        scale = "auto"
+    paper = request.form.get("paper", "A4")
+    if paper not in printing.PAPER_CHOICES:
+        paper = "A4"
+    # 页面范围只允许数字/逗号/连字符, 防注入
+    pages = request.form.get("pages", "").strip().replace(" ", "")
+    if not re.fullmatch(r"[0-9,\-]*", pages):
+        pages = ""
+
     # 落盘到临时目录, 用唯一前缀避免冲突
     safe_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}_{filename}")
     f.save(safe_path)
@@ -90,6 +102,9 @@ def api_print():
             copies=copies,
             color=color,
             duplex=duplex,
+            scale=scale,
+            paper=paper,
+            pages=pages,
         )
         return jsonify(ok=True, message=msg)
     except printing.PrintError as exc:
