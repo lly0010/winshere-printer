@@ -1,0 +1,6 @@
+Flask>=3.0.0
+Werkzeug>=3.0.0
+# Windows 打印 / 打印机枚举 (仅 Windows 安装)
+pywin32>=306 ; platform_system == "Windows"
+# 启动时在控制台生成访问二维码 (可选, 手机扫码直达)
+qrcode>=7.4

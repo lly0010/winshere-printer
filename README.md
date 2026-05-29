@@ -1,2 +1,79 @@
-# winshere-printer
-共享
+# winshere-printer · 内网共享打印
+
+把一台 **Windows** 电脑上的打印机共享给内网里的**所有设备**(安卓 / iOS / Mac / Windows),
+任何设备**无需安装驱动、无需安装软件**,只用浏览器打开网页、上传文件即可远程打印。
+
+## 它是怎么工作的
+
+```
+   安卓 / iOS / Mac / Win 设备 (只需浏览器)
+                │  上传 PDF / 图片 / Office / 文本
+                ▼
+   ┌─────────────────────────────────────┐
+   │  Winshere Printer (Flask Web 服务)   │   ← 跑在接了打印机的 Windows 上
+   │  渲染 / 调用 Windows 打印 API         │
+   └─────────────────────────────────────┘
+                │
+                ▼
+            物理打印机
+```
+
+- **客户端零安装零驱动**:只要能打开网页就能打印,天然跨平台。
+- **服务端静默打印**:PDF / 图片用便携版 [SumatraPDF](https://www.sumatrapdfreader.org/) 静默打印;
+  Office / 文本等用 Windows 已关联的程序打印。
+- 支持选择打印机、份数、彩色/黑白、双面。
+
+## 快速开始(在连接打印机的 Windows 上)
+
+1. 安装 [Python 3.10+](https://www.python.org/downloads/),安装时勾选 **Add Python to PATH**。
+2. 下载本项目到该电脑。
+3. **双击 `start.bat`**。首次运行会自动建虚拟环境、装依赖并启动。
+4. 控制台会显示「内网访问」地址(形如 `http://192.168.x.x:8631`)以及一个**二维码**。
+5. 内网里的手机/平板/电脑用浏览器打开该地址(或扫码),选文件 → 选打印机 → 点「开始打印」。
+
+> 手动启动:`python app.py`,可加 `--port 8631` / `--host 0.0.0.0` 参数。
+
+## 支持的文件类型
+
+- **静默打印(推荐)**:`pdf` `png` `jpg` `jpeg` `gif` `bmp` `tif` `tiff`
+- **关联程序打印**:`txt` `doc` `docx` `xls` `xlsx` `ppt` `pptx` `rtf` `csv` `html` `htm`
+  (需该电脑装有能打开对应格式的程序,如 Office / WPS)
+
+## 关于 SumatraPDF
+
+首次打印 PDF/图片时,程序会尝试自动下载 SumatraPDF 便携版到 `bin/SumatraPDF.exe`。
+若该电脑无法访问外网,请手动从官网下载 **64 位便携版**,重命名为 `SumatraPDF.exe`
+放到项目的 `bin\` 目录即可。
+
+## 网络与防火墙
+
+- 所有设备需在**同一局域网**。
+- 首次启动时,Windows 防火墙可能弹窗询问,请允许 Python 在专用/家庭网络通信。
+- 默认端口 `8631`,如被占用可用 `--port` 更换。
+
+## 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| 网页显示「未检测到打印机」 | 确认程序运行在装了打印机的 Windows 上,且 `pip install pywin32` 成功 |
+| PDF/图片打印报错找不到 SumatraPDF | 手动放置 `bin\SumatraPDF.exe`(见上) |
+| 手机打不开网页 | 确认手机与电脑同一 WiFi;检查 Windows 防火墙是否放行该端口 |
+| Office 文件不打印 | 确认电脑装了 Office/WPS 并已关联该文件类型 |
+
+## 安全提示
+
+本服务面向**可信内网**使用,默认不带鉴权。请勿将端口暴露到公网。
+如需在更开放的网络使用,建议加访问口令或放到反向代理后。
+
+## 开发 / 本地校验
+
+代码在非 Windows 平台也可 `import` 与跑基础校验(打印功能仅在 Windows 生效):
+
+```bash
+pip install Flask qrcode
+python -c "import app, printing; print('ok')"
+```
+
+## 许可证
+
+MIT,见 [LICENSE](LICENSE)。

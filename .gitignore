@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+bin/SumatraPDF.exe
+bin/
+.DS_Store
+*.log
