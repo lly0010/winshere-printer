@@ -141,8 +141,10 @@ def is_allowed(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in ALLOWED_EXTS
 
 
-SCALE_CHOICES = ("auto", "noscale", "fit", "shrink")
 PAPER_CHOICES = ("A4", "A3", "A5", "A6", "letter", "legal")
+
+# 缩放百分比允许范围
+SCALE_MIN, SCALE_MAX = 10, 400
 
 # 各纸张的尺寸(单位: PDF point, 1pt=1/72 英寸), 纵向 (宽, 高)
 PAPER_POINTS: dict[str, tuple[float, float]] = {
@@ -155,20 +157,47 @@ PAPER_POINTS: dict[str, tuple[float, float]] = {
 }
 
 
+def clamp_scale(percent) -> int:
+    """把缩放百分比限制到合法范围, 非法时回退 100。"""
+    try:
+        p = int(round(float(percent)))
+    except (TypeError, ValueError):
+        return 100
+    return max(SCALE_MIN, min(p, SCALE_MAX))
+
+
+def _parse_pages(pages: str, total: int) -> list[int]:
+    """解析 "1-5,8" 这样的页码范围为 0 基索引列表; 空或非法返回全部页。"""
+    pages = (pages or "").strip().replace(" ", "")
+    if not pages:
+        return list(range(total))
+    result: list[int] = []
+    for part in pages.split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, _, b = part.partition("-")
+            try:
+                start = int(a) if a else 1
+                end = int(b) if b else total
+            except ValueError:
+                continue
+            for n in range(start, end + 1):
+                if 1 <= n <= total:
+                    result.append(n - 1)
+        else:
+            try:
+                n = int(part)
+            except ValueError:
+                continue
+            if 1 <= n <= total:
+                result.append(n - 1)
+    return result or list(range(total))
+
+
 def _should_rotate(sw: float, sh: float, pw: float, ph: float) -> bool:
     """页面方向与纸张方向不一致时需要旋转 90° (自动旋转)。"""
     return (sw > sh) != (pw > ph)
-
-
-def _compute_scale(ew: float, eh: float, pw: float, ph: float, mode: str) -> float:
-    """根据缩放模式计算缩放系数。"""
-    if ew <= 0 or eh <= 0:
-        return 1.0
-    if mode == "fit":
-        return min(pw / ew, ph / eh)
-    if mode == "shrink":
-        return min(1.0, pw / ew, ph / eh)
-    return 1.0  # noscale: 100% 实际大小
 
 
 def normalize_pdf(
@@ -177,18 +206,24 @@ def normalize_pdf(
     paper: str = "A4",
     auto_rotate: bool = True,
     auto_center: bool = True,
-    scale_mode: str = "noscale",
+    scale_percent: int = 100,
+    pages: str = "",
 ) -> None:
-    """把 PDF 每页重排到指定纸张上, 应用自动旋转/自动居中/缩放, 输出到 dst。
+    """把 PDF 每页重排到指定纸张上, 应用自动旋转/自动居中/百分比缩放, 输出到 dst。
 
+    scale_percent: 缩放百分比, 100 表示实际大小。
+    pages: 页码范围(如 "1-5,8"), 为空表示全部; 输出仅含所选页。
     生成的每页尺寸都精确等于纸张大小, 内容已按设置摆放; 之后用 SumatraPDF
     以 noscale 1:1 打印即可, 不会再被二次旋转或缩放。
     """
     pw, ph = PAPER_POINTS.get(paper, PAPER_POINTS["A4"])
+    scale = clamp_scale(scale_percent) / 100.0
     reader = PdfReader(src)
     writer = PdfWriter()
+    indices = _parse_pages(pages, len(reader.pages))
 
-    for page in reader.pages:
+    for idx in indices:
+        page = reader.pages[idx]
         # 先把页面自带的 /Rotate 烘焙进内容, 这样 mediabox 反映的就是可视尺寸
         try:
             page.transfer_rotation_to_content()
@@ -201,7 +236,6 @@ def normalize_pdf(
 
         rotate = auto_rotate and _should_rotate(sw, sh, pw, ph)
         ew, eh = (sh, sw) if rotate else (sw, sh)  # 旋转后的可视宽高
-        scale = _compute_scale(ew, eh, pw, ph, scale_mode)
         sew, seh = ew * scale, eh * scale
 
         if auto_center:
@@ -265,7 +299,7 @@ def print_file(
     copies: int = 1,
     color: str = "auto",
     duplex: bool = False,
-    scale: str = "auto",
+    scale_percent: int = 100,
     paper: str = "A4",
     pages: str = "",
     auto_rotate: bool = True,
@@ -278,6 +312,7 @@ def print_file(
         raise PrintError("当前环境不是 Windows 或缺少 pywin32, 无法打印。")
 
     copies = max(1, min(int(copies), 99))
+    scale_percent = clamp_scale(scale_percent)
     ext = os.path.splitext(path)[1].lower()
     target_printer = printer or default_printer()
     if not target_printer:
@@ -290,19 +325,16 @@ def print_file(
                 "需要 SumatraPDF 才能静默打印 PDF/图片, 但未找到也无法下载。"
                 "请手动下载便携版放到程序目录的 bin/SumatraPDF.exe。"
             )
-        # scale=auto: PDF 用 100% (自动旋转/居中), 图片用 fit 避免大图被裁切
-        if scale == "auto":
-            scale = "noscale" if ext == ".pdf" else "fit"
-        if scale not in SCALE_CHOICES:
-            scale = "noscale"
         if paper not in PAPER_CHOICES:
             paper = "A4"
 
-        # PDF: 用 pypdf 规范化, 把自动旋转/自动居中/缩放烘焙进页面,
+        # PDF: 用 pypdf 规范化, 把自动旋转/自动居中/百分比缩放/页码烘焙进页面,
         # 之后用 noscale 让 SumatraPDF 1:1 打印, 避免二次旋转/缩放。
         print_path = path
         normalized: str | None = None
-        print_scale = scale
+        # 图片用 fit 铺满纸张; 无 pypdf 时 PDF 回退为按比例(noscale≈实际大小)
+        print_scale = "fit" if ext != ".pdf" else "noscale"
+        print_pages = pages
         if ext == ".pdf" and HAVE_PYPDF:
             try:
                 fd, normalized = tempfile.mkstemp(
@@ -312,19 +344,19 @@ def print_file(
                 normalize_pdf(
                     path, normalized, paper=paper,
                     auto_rotate=auto_rotate, auto_center=auto_center,
-                    scale_mode=scale,
+                    scale_percent=scale_percent, pages=pages,
                 )
                 print_path = normalized
                 print_scale = "noscale"  # 几何已烘焙, 不再缩放
+                print_pages = ""          # 页码已在规范化时筛选
             except Exception:  # noqa: BLE001 - 规范化失败则回退原文件
                 if normalized and os.path.exists(normalized):
                     os.remove(normalized)
                 normalized = None
                 print_path = path
-                print_scale = scale
 
         settings = _build_sumatra_settings(
-            color, duplex, scale=print_scale, paper=paper, pages=pages
+            color, duplex, scale=print_scale, paper=paper, pages=print_pages
         )
         try:
             # SumatraPDF 不直接支持份数, 通过多次提交实现

@@ -136,13 +136,8 @@
                   </select>
                 </div>
                 <div>
-                  <label>缩放</label>
-                  <select name="scale" id="scale">
-                    <option value="auto" selected>自动</option>
-                    <option value="noscale">实际大小 100%</option>
-                    <option value="fit">适应页面</option>
-                    <option value="shrink">过大才缩小</option>
-                  </select>
+                  <label>缩放比例（%）</label>
+                  <input type="number" name="scale" id="scale" value="100" min="10" max="400" step="5">
                 </div>
               </div>
 
@@ -203,13 +198,47 @@
     }
     function onFile() { showName(); renderPreview(); }
 
-    // 打印预览 (纯浏览器端, 不上传)
+    // 收集当前表单设置 (预览与打印共用)
+    function buildFormData() {
+      const data = new FormData(form);
+      const cb = id => document.getElementById(id).checked ? 'true' : 'false';
+      data.set('duplex', cb('duplex'));
+      data.set('auto_rotate', cb('auto_rotate'));
+      data.set('auto_center', cb('auto_center'));
+      return data;
+    }
+    function applyMono() {
+      pvBox.style.filter = document.getElementById('color').value === 'mono' ? 'grayscale(1)' : '';
+    }
+
+    // 打印预览: PDF 交给服务端按当前设置排版(预览=实际打印效果), 图片/文本走客户端
     let previewUrl = null;
+    let previewSeq = 0;
     function clearPreview() {
       if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
       pvBox.innerHTML = '';
+      applyMono();
     }
-    function renderPreview() {
+    function showFrame(src) {
+      const frame = document.createElement('iframe');
+      frame.className = 'pv-frame'; frame.src = src;
+      pvBox.appendChild(frame);
+      const link = document.createElement('a');
+      link.className = 'pv-link'; link.href = src; link.target = '_blank';
+      link.textContent = '若上方空白(部分手机浏览器),点此新标签查看';
+      pvBox.appendChild(link);
+    }
+    function applyImgTransform(img) {
+      const rotate = document.getElementById('auto_rotate').checked;
+      const sc = Math.max(10, Math.min(400, parseInt(document.getElementById('scale').value || '100', 10))) / 100;
+      img.onload = () => {
+        let t = '';
+        if (rotate && img.naturalWidth > img.naturalHeight) t += 'rotate(90deg) ';
+        if (sc !== 1) t += 'scale(' + sc + ') ';
+        img.style.transform = t.trim();
+      };
+    }
+    async function renderPreview() {
       clearPreview();
       if (!fileInput.files.length) { pvEmpty.textContent = '尚未选择文件'; return; }
       const file = fileInput.files[0];
@@ -217,21 +246,34 @@
       const ext = (file.name.split('.').pop() || '').toLowerCase();
       const imgExts = ['png','jpg','jpeg','gif','bmp','tif','tiff'];
       const txtExts = ['txt','csv','html','htm'];
+      const isPdf = ext === 'pdf' || file.type === 'application/pdf';
+      const isImg = file.type.startsWith('image/') || imgExts.includes(ext);
 
-      if (file.type.startsWith('image/') || imgExts.includes(ext)) {
+      if (isPdf) {
+        const seq = ++previewSeq;
+        pvEmpty.textContent = file.name + ' · 生成预览中…';
+        try {
+          const r = await fetch('/api/preview', { method: 'POST', body: buildFormData() });
+          if (seq !== previewSeq) return;            // 已有更新的请求, 丢弃
+          const ct = r.headers.get('content-type') || '';
+          if (r.ok && ct.includes('application/pdf')) {
+            const blob = await r.blob();
+            if (seq !== previewSeq) return;
+            previewUrl = URL.createObjectURL(blob);
+          } else {
+            previewUrl = URL.createObjectURL(file);  // 回退: 原始 PDF
+          }
+        } catch (e) {
+          previewUrl = URL.createObjectURL(file);
+        }
+        pvEmpty.textContent = file.name;
+        showFrame(previewUrl);
+      } else if (isImg) {
         previewUrl = URL.createObjectURL(file);
         const img = document.createElement('img');
         img.className = 'pv-img'; img.alt = '图片预览'; img.src = previewUrl;
+        applyImgTransform(img);
         pvBox.appendChild(img);
-      } else if (ext === 'pdf' || file.type === 'application/pdf') {
-        previewUrl = URL.createObjectURL(file);
-        const frame = document.createElement('iframe');
-        frame.className = 'pv-frame'; frame.src = previewUrl;
-        pvBox.appendChild(frame);
-        const link = document.createElement('a');
-        link.className = 'pv-link'; link.href = previewUrl; link.target = '_blank';
-        link.textContent = '若上方空白(部分手机浏览器),点此新标签查看 PDF';
-        pvBox.appendChild(link);
       } else if (txtExts.includes(ext) || file.type.startsWith('text/')) {
         const reader = new FileReader();
         reader.onload = e => {
@@ -250,6 +292,23 @@
       }
     }
 
+    // 设置变动时刷新预览 (防抖); 颜色仅切换灰度, 无需重新生成
+    let previewTimer = null;
+    function schedulePreview() {
+      if (!fileInput.files.length) return;
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(renderPreview, 350);
+    }
+    ['paper', 'scale', 'pages', 'auto_rotate', 'auto_center'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', schedulePreview);
+      if (el.tagName === 'INPUT' && (el.type === 'number' || el.type === 'text')) {
+        el.addEventListener('input', schedulePreview);
+      }
+    });
+    document.getElementById('color').addEventListener('change', applyMono);
+
     ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {
       ev.preventDefault(); drop.classList.add('drag');
     }));
@@ -265,11 +324,7 @@
     form.addEventListener('submit', async ev => {
       ev.preventDefault();
       if (!fileInput.files.length) { setStatus('err', '请先选择文件'); return; }
-      const data = new FormData(form);
-      const cb = id => document.getElementById(id).checked ? 'true' : 'false';
-      data.set('duplex', cb('duplex'));
-      data.set('auto_rotate', cb('auto_rotate'));
-      data.set('auto_center', cb('auto_center'));
+      const data = buildFormData();
       btn.disabled = true;
       setStatus('info', '正在上传并打印, 请稍候…');
       try {
