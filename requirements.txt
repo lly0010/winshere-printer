@@ -4,3 +4,6 @@ Werkzeug>=3.0.0
 pywin32>=306 ; platform_system == "Windows"
 # 启动时在控制台生成访问二维码 (可选, 手机扫码直达)
 qrcode>=7.4
+# 控制面板的系统托盘图标 (最小化到托盘)
+pystray>=0.19
+Pillow>=10.0
